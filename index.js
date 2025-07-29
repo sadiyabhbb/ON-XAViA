@@ -1,121 +1,66 @@
-import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
-import { spawn, execSync } from 'child_process';
+// Load environment variables
+import 'dotenv/config';
+
+import { spawn } from 'child_process';
+import fs from 'fs';
 import semver from 'semver';
 import axios from 'axios';
-
-import { } from 'dotenv/config';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import logger from './core/var/modules/logger.js';
 import loadPlugins from './core/var/modules/installDep.js';
 
-import environments from './core/var/modules/environments.get.js';
+// Resolve path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const BOT_ENTRY = path.join(__dirname, 'core', '_build.js');
 
-const { isGlitch, isReplit, isGitHub } = environments;
-
-console.clear();
-
-// Install newer node version on some old Repls
-function upNodeReplit() {
-    return new Promise(resolve => {
-        execSync('npm i --save-dev node@16 && npm config set prefix=$(pwd)/node_modules/node && export PATH=$(pwd)/node_modules/node/bin:$PATH');
-        resolve();
-    })
-}
-
-(async () => {
-    if (process.version.slice(1).split('.')[0] < 16) {
-        if (isReplit) {
-            try {
-                logger.warn("Installing Node.js v16 for Repl.it...");
-                await upNodeReplit();
-                if (process.version.slice(1).split('.')[0] < 16) throw new Error("Failed to install Node.js v16.");
-            } catch (err) {
-                logger.error(err);
-                process.exit(0);
-            }
-        }
-        logger.error("Xavia requires Node 16 or higher. Please update your version of Node.");
-        process.exit(0);
-    }
-
-    if (isGlitch) {
-        const WATCH_FILE = {
-            "restart": {
-                "include": [
-                    "\\.json"
-                ]
-            },
-            "throttle": 3000
-        }
-
-        if (!existsSync(process.cwd() + '/watch.json') || !statSync(process.cwd() + '/watch.json').isFile()) {
-            logger.warn("Glitch environment detected. Creating watch.json...");
-            writeFileSync(process.cwd() + '/watch.json', JSON.stringify(WATCH_FILE, null, 2));
-            execSync('refresh');
-        }
-    }
-
-    if (isGitHub) {
-        logger.warn("Running on GitHub is not recommended.");
-    }
-})();
-
-// End
-
-
-// CHECK UPDATE
+// Check for update
 async function checkUpdate() {
     logger.custom("Checking for updates...", "UPDATE");
     try {
         const res = await axios.get('https://raw.githubusercontent.com/XaviaTeam/XaviaBot/main/package.json');
+        const latest = res.data.version;
+        const current = JSON.parse(fs.readFileSync('./package.json')).version;
 
-        const { version } = res.data;
-        const currentVersion = JSON.parse(readFileSync('./package.json')).version;
-        if (semver.lt(currentVersion, version)) {
-            logger.warn(`New version available: ${version}`);
-            logger.warn(`Current version: ${currentVersion}`);
+        if (semver.lt(current, latest)) {
+            logger.warn(`New version available: ${latest}`);
+            logger.warn(`Current version: ${current}`);
         } else {
             logger.custom("No updates available.", "UPDATE");
         }
     } catch (err) {
-        logger.error('Failed to check for updates.');
+        logger.error("Failed to check for updates.");
     }
 }
 
-
-// Child handler
-const _1_MINUTE = 60000;
-let restartCount = 0;
-
-async function main() {
+// Bot start handler
+async function startBot() {
     await checkUpdate();
     await loadPlugins();
-    const child = spawn('node', ['--trace-warnings', '--experimental-import-meta-resolve', '--expose-gc', 'core/_build.js'], {
-        cwd: process.cwd(),
+
+    const child = spawn('node', [BOT_ENTRY], {
         stdio: 'inherit',
         env: process.env
     });
 
-    child.on("close", async (code) => {
-        handleRestartCount();
-        if (code !== 0 && restartCount < 5) {
-            console.log();
-            logger.error(`An error occurred with exit code ${code}`);
-            logger.warn("Restarting...");
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            main();
+    child.on('close', (code) => {
+        if (code === 0) {
+            logger.custom('Bot exited normally.', 'EXIT');
         } else {
-            console.log();
-            logger.error("XaviaBot has stopped, press Ctrl + C to exit.");
+            logger.error(`Bot crashed with code ${code}`);
+            // Optional: Restart logic
+            // logger.warn("Restarting in 3s...");
+            // setTimeout(startBot, 3000);
         }
     });
-};
-
-function handleRestartCount() {
-    restartCount++;
-    setTimeout(() => {
-        restartCount--;
-    }, _1_MINUTE);
 }
 
-main();
+// Node version check (no execSync!)
+const nodeMajor = parseInt(process.version.slice(1).split('.')[0]);
+if (nodeMajor < 16) {
+    logger.error('Xavia requires Node.js v16 or higher. Please upgrade.');
+    process.exit(1);
+}
 
+startBot();
